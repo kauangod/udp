@@ -15,6 +15,7 @@
 #include <sstream>
 #define PORT 7777
 #define SERVER_IP_ADDRESS "127.0.0.1"
+#define MAX_BUFFER_SIZE 1024
 
 class Segment{
 public:
@@ -28,7 +29,7 @@ public:
         // std::cout << "segment payload: " << this->payload.data() << std::endl;
         this->id = id;
         this->setHash();
-        std::cout << "segment hash: " << this->hash << std::endl;
+        // std::cout << "segment hash: " << this->hash << std::endl;
     }
     ~Segment(){
         payload.clear();
@@ -79,14 +80,12 @@ int parse_command(std::string command, int* o1, int* o2, int* o3, int* o4){
   *o4 = std::stoi(command.substr(p3 + 1));
 
   if (*o1 > 255 || *o2 > 255 || *o3 > 255 || *o4 > 255) {
-    std::cerr << "Invalid IP address: octet exceeds 255." << std::endl;
     return -1;
   }
-
   return 0;
 }
 int main() {
-  std::string command = "", ip_address = "", file_name = "", get_request = "";
+  std::string command = "", ip_address = "", file_name = "", request = "";
   std::regex ip_pattern("^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$");
   struct sockaddr_in server_addr;
   socklen_t len = 0;
@@ -132,20 +131,29 @@ int main() {
     close(client_socket);
     return -1;
   }
-  get_request = command.substr(0, 3);
-  if (get_request != "GET"){
+  request = command.substr(0, 3);
+  if (request != "GET"){
     std::cerr << "Invalid command." << std::endl;
     close(client_socket);
     return -1;
   }
 
-  std::cout << "command: " << command << std::endl;
+  // std::cout << "command: " << command << std::endl;
   size_t p4 = command.find('/');
   size_t command_size = command.length();
   size_t file_nm_size = command_size - (p4 + 1);
 
   for (int i = 0; i < file_nm_size; i++){
     file_name += command[p4 + i + 1];
+  }
+
+  // If the target file already exists, remove it to start fresh
+  {
+    std::ifstream existing_file_check(file_name, std::ios::binary);
+    if (existing_file_check.good()){
+      existing_file_check.close();
+      std::remove(file_name.c_str());
+    }
   }
 
   ip_addr_num = (in_addr_t) inet_addr(ip_address.c_str());
@@ -156,24 +164,26 @@ int main() {
 
   send_status = sendto(client_socket, (const char*)command_c, strlen(command_c), MSG_CONFIRM,
           (struct sockaddr*)&server_addr, sizeof(server_addr));
+
   if (send_status == -1){
     std::cerr << "Error sending command to server, either the server is not running or it's busy." << std::endl;
     close(client_socket);
     return -1;
   }
-  char buffer_for_file[10];
+
+  char buffer_for_file[MAX_BUFFER_SIZE];
   len = sizeof(server_addr);
 
-  std::cout << "Server address: " << inet_ntoa(server_addr.sin_addr) << std::endl;
-  std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
+  // std::cout << "Server address: " << inet_ntoa(server_addr.sin_addr) << std::endl;
+  // std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
 
   while(n != 0){
-    n = recvfrom(client_socket, buffer_for_file, sizeof(buffer_for_file), 0, (struct sockaddr*)&server_addr, &len);
-    std::cout << "n: " << n << std::endl;
+    n = recvfrom(client_socket, buffer_for_file, MAX_BUFFER_SIZE, 0, (struct sockaddr*)&server_addr, &len);
+    // std::cout << "n: " << n << std::endl;
     std::ofstream file(file_name, std::ios::binary | std::ios::app);
-    std::cout << buffer_for_file << std::endl;
+    // std::cout << buffer_for_file << std::endl;
     file.write(buffer_for_file, n);
-    memset(buffer_for_file, '\0', sizeof(buffer_for_file));
+    //memset(buffer_for_file, '\0', sizeof(buffer_for_file));
     file.close();
   }
   close(client_socket);

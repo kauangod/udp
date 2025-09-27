@@ -13,7 +13,7 @@
 #include <arpa/inet.h>
 #include <fstream>
 #define PORT 7777
-#define BYTES_PER_SEGMENT 10
+#define BYTES_PER_SEGMENT 1024
 
 class Segment{
 public:
@@ -27,7 +27,7 @@ public:
         // std::cout << "segment payload: " << this->payload.data() << std::endl;
         this->id = id;
         this->setHash();
-        std::cout << "segment hash: " << this->hash << std::endl;
+        // std::cout << "segment hash: " << this->hash << std::endl;
     }
     ~Segment(){
         payload.clear();
@@ -110,11 +110,11 @@ int main() {
             n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
         }
 
-         std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
-         std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
+        //  std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
+        //  std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
 
         buffer[n] = '\0';
-        std::cout << buffer << std::endl;
+        // std::cout << buffer << std::endl;
 
         std::string buffer_str = buffer;
         std::string file_name = return_file_name(buffer_str);
@@ -147,7 +147,7 @@ int main() {
         // std::cout << "Client socket: " << client_socket << std::endl;
         // std::cout << "Client address: " << datagram->dst_ip << std::endl;
         int i = 0;
-        size_t buffer_size;
+        size_t buffer_size, number_of_bytes = 0;
 
         while(i < segments.size()){
             datagram->add_segment(segments[i++]);
@@ -157,9 +157,18 @@ int main() {
             // std::cout << "payload: " << datagram->segment->payload.data() << std::endl;
             //std::cout << "buffer_size: " << buffer_size << std::endl;
             memcpy(buffer_for_file, payload.data(), buffer_size);
-            sendto(server_socket, buffer_for_file, buffer_size, MSG_CONFIRM, (struct sockaddr*) &client_addr, len);
+            number_of_bytes = sendto(server_socket, buffer_for_file, buffer_size, MSG_CONFIRM, (struct sockaddr*) &client_addr, len);
+            if (number_of_bytes == -1){
+                std::cerr << "Error sending file to client" << std::endl;
+                close(server_socket);
+                return -1;
+            }
+            else{
+                std::cout << "Bytes sent: " << number_of_bytes << std::endl;
+            }
             delete[] buffer_for_file;
         }
+        std::cout << "File sent successfully" << std::endl;
         delete datagram;
         segments.clear();
         file.close();
