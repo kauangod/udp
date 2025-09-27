@@ -4,31 +4,96 @@
 #include <openssl/sha.h>
 #include <string>
 #include <sys/socket.h>
+#include <vector>
 #include <unistd.h>
 #include <sys/types.h>
 #include <cstring>
 #include <regex>
 #include <arpa/inet.h>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #define PORT 7777
 #define SERVER_IP_ADDRESS "127.0.0.1"
 
-class Segment {
-  /*TODO: It carries the origin, port number of the destination, port of the
-   * source and payload.*/
+class Segment{
+public:
+    std::string dst_port, src_port, payload, hash;
+    int id;
+
+    Segment(int dst_port = PORT, int src_port = PORT, std::string payload = std::string(), int id = 0){
+        this->dst_port = dst_port;
+        this->src_port = src_port;
+        this->payload = payload;
+        // std::cout << "segment payload: " << this->payload.data() << std::endl;
+        this->id = id;
+        this->setHash();
+        std::cout << "segment hash: " << this->hash << std::endl;
+    }
+    ~Segment(){
+        payload.clear();
+    }
+    void setHash(){
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256_CTX sha256;
+        SHA256_Init(&sha256);
+        SHA256_Update(&sha256, this->payload.c_str(), this->payload.size());
+        SHA256_Final(hash, &sha256);
+
+        std::stringstream ss;
+
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++){
+            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+        }
+
+        this->hash = ss.str();
+    }
 };
-class Datagram {
-  /*TODO: Implement the logic to handle the datagram, which have the source IP
-   * address, the destination IP address and a segment.*/
+class Datagram{
+public:
+    Segment* segment;
+    std::string src_ip, dst_ip;
+    Datagram(std::string src_ip = "127.0.0.1", std::string dst_ip = "127.0.0.1"){
+      this->src_ip = src_ip;
+      this->dst_ip = dst_ip;
+      this->segment = nullptr;
+    }
+    ~Datagram(){
+        delete segment;
+    }
+    void add_segment(Segment* segment){
+        this->segment = segment;
+    }
 };
 
+int parse_command(std::string command, int* o1, int* o2, int* o3, int* o4){
+  size_t p1 = command.find('.');
+  size_t p2 = command.find('.', p1 + 1);
+  size_t p3 = command.find('.', p2 + 1);
+
+  int at_pos = command.find('@');
+
+  *o1 = std::stoi(command.substr(at_pos + 1, p1-(at_pos + 1)));
+  *o2 = std::stoi(command.substr(p1 + 1, p2 - (p1 + 1)));
+  *o3 = std::stoi(command.substr(p2 + 1, p3 - (p2 + 1)));
+  *o4 = std::stoi(command.substr(p3 + 1));
+
+  if (*o1 > 255 || *o2 > 255 || *o3 > 255 || *o4 > 255) {
+    std::cerr << "Invalid IP address: octet exceeds 255." << std::endl;
+    return -1;
+  }
+
+  return 0;
+}
 int main() {
   std::string command = "", ip_address = "", file_name = "", get_request = "";
   std::regex ip_pattern("^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$");
   struct sockaddr_in server_addr;
   socklen_t len = 0;
   in_addr_t ip_addr_num = 0;
-  int client_socket = socket(AF_INET, SOCK_DGRAM, 0), port = 0, n = 0, at_pos = 0;
+  int client_socket = socket(AF_INET, SOCK_DGRAM, 0), port = 0, n = 1, send_status = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0;
   char buffer[1024] = {0};
+  Datagram* datagram = nullptr;
 
   if (client_socket == -1){
     std::cerr << "Error creating socket" << std::endl;
@@ -39,36 +104,13 @@ int main() {
   std::cout << "Enter your request: ";
   std::getline(std::cin >> std::ws, command);
 
-  size_t p1 = command.find('.');
-  size_t p2 = command.find('.', p1 + 1);
-  size_t p3 = command.find('.', p2 + 1);
-  get_request = command.substr(0, 3);
-  at_pos = command.find('@');
-
-  int o1 = std::stoi(command.substr(at_pos + 1, p1-(at_pos + 1)));
-  int o2 = std::stoi(command.substr(p1 + 1, p2 - (p1 + 1)));
-  int o3 = std::stoi(command.substr(p2 + 1, p3 - (p2 + 1)));
-  int o4 = std::stoi(command.substr(p3 + 1));
-
-  ip_address = std::to_string(o1) + "." + std::to_string(o2) + "." + std::to_string(o3) + "." + std::to_string(o4);
-  size_t port_pos_0 = command.find(':') + 1;
-  size_t port_pos_end = command.find('/', port_pos_0);
-  port = std::stoi(command.substr(port_pos_0, port_pos_end - port_pos_0));
-
-  if (get_request != "GET"){
-    std::cerr << "Invalid command." << std::endl;
+  if (parse_command(command, &o1, &o2, &o3, &o4) == -1) {
+    std::cerr << "Invalid IP address: octet exceeds 255." << std::endl;
     close(client_socket);
     return -1;
   }
 
-  std::cout << "command: " << command << std::endl;
-  size_t p4 = command.find('/');
-  size_t command_size = command.length();
-  size_t file_nm_size = command_size - (p4 + 1);
-  std::cout << "file_nm_size: " << file_nm_size << std::endl;
-  for (int i = 0; i < file_nm_size; i++){
-    file_name += command[p4 + i + 1];
-  }
+  ip_address = std::to_string(o1) + "." + std::to_string(o2) + "." + std::to_string(o3) + "." + std::to_string(o4);
 
   if (!std::regex_match(ip_address, ip_pattern)){
     std::cerr << "Invalid pattern of IP address." << std::endl;
@@ -76,11 +118,9 @@ int main() {
     return -1;
   }
 
-  if (o1 > 255 || o2 > 255 || o3 > 255 || o4 > 255) {
-    std::cerr << "Invalid IP address: octet exceeds 255." << std::endl;
-    close(client_socket);
-    return -1;
-  }
+  size_t port_pos_0 = command.find(':') + 1;
+  size_t port_pos_end = command.find('/', port_pos_0);
+  port = std::stoi(command.substr(port_pos_0, port_pos_end - port_pos_0));
 
   if (port < 1024 || port > 65535) {
     std::cerr << "Invalid port number." << std::endl;
@@ -92,6 +132,21 @@ int main() {
     close(client_socket);
     return -1;
   }
+  get_request = command.substr(0, 3);
+  if (get_request != "GET"){
+    std::cerr << "Invalid command." << std::endl;
+    close(client_socket);
+    return -1;
+  }
+
+  std::cout << "command: " << command << std::endl;
+  size_t p4 = command.find('/');
+  size_t command_size = command.length();
+  size_t file_nm_size = command_size - (p4 + 1);
+
+  for (int i = 0; i < file_nm_size; i++){
+    file_name += command[p4 + i + 1];
+  }
 
   ip_addr_num = (in_addr_t) inet_addr(ip_address.c_str());
   server_addr.sin_family = AF_INET;
@@ -99,18 +154,28 @@ int main() {
   server_addr.sin_addr.s_addr = ip_addr_num;
   const char* command_c = command.c_str();
 
-  sendto(client_socket, (const char*)command_c, strlen(command_c), MSG_CONFIRM,
+  send_status = sendto(client_socket, (const char*)command_c, strlen(command_c), MSG_CONFIRM,
           (struct sockaddr*)&server_addr, sizeof(server_addr));
-
-  std::cout << "file_name: " << file_name << std::endl;
-
+  if (send_status == -1){
+    std::cerr << "Error sending command to server, either the server is not running or it's busy." << std::endl;
+    close(client_socket);
+    return -1;
+  }
+  char buffer_for_file[10];
   len = sizeof(server_addr);
-  n = recvfrom(client_socket, (char*)buffer, 1024, MSG_WAITALL, (struct sockaddr*)&server_addr, &len);
-  buffer[n] = '\0';
 
-  std::cout << buffer << std::endl;
-  // std::cout << "Server address: " << server_addr.sin_addr.s_addr << std::endl;
-  // std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
+  std::cout << "Server address: " << inet_ntoa(server_addr.sin_addr) << std::endl;
+  std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
+
+  while(n != 0){
+    n = recvfrom(client_socket, buffer_for_file, sizeof(buffer_for_file), 0, (struct sockaddr*)&server_addr, &len);
+    std::cout << "n: " << n << std::endl;
+    std::ofstream file(file_name, std::ios::binary | std::ios::app);
+    std::cout << buffer_for_file << std::endl;
+    file.write(buffer_for_file, n);
+    memset(buffer_for_file, '\0', sizeof(buffer_for_file));
+    file.close();
+  }
   close(client_socket);
 
   return 0;

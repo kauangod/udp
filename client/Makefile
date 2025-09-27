@@ -1,2 +1,2 @@
 all:
-	g++ main.cpp -o main
+	g++ -I/usr/include/openssl/ main.cpp -o main -lcrypto -w
