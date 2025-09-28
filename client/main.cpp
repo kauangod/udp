@@ -21,8 +21,9 @@ class Segment{
 public:
     std::string dst_port, src_port, payload, hash;
     int id;
+    size_t length;
 
-    Segment(int dst_port = PORT, int src_port = PORT, std::string payload = std::string(), int id = 0){
+    Segment(std::string dst_port = "7777", std::string src_port = "7777", std::string payload = std::string(), int id = 0){
         this->dst_port = dst_port;
         this->src_port = src_port;
         this->payload = payload;
@@ -30,11 +31,12 @@ public:
         this->id = id;
         this->setHash();
         // std::cout << "segment hash: " << this->hash << std::endl;
+        this->length = sizeof(payload) + sizeof(id) + sizeof(hash) + sizeof(dst_port) + sizeof(src_port);
     }
     ~Segment(){
         payload.clear();
     }
-    void setHash(){
+    std::string generateHash(){
         unsigned char hash[SHA256_DIGEST_LENGTH];
         SHA256_CTX sha256;
         SHA256_Init(&sha256);
@@ -47,7 +49,13 @@ public:
             ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
         }
 
-        this->hash = ss.str();
+        return ss.str();
+    }
+    bool checkHash(std::string originalHash, std::string receivedHash){
+        return originalHash == receivedHash;
+    }
+    void setHash(){
+        this->hash = generateHash();
     }
 };
 class Datagram{
@@ -92,6 +100,7 @@ int main() {
   in_addr_t ip_addr_num = 0;
   int client_socket = socket(AF_INET, SOCK_DGRAM, 0), port = 0, n = 1, send_status = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0;
   char buffer[1024] = {0};
+  std::string buffer_for_file_str = "";
   Datagram* datagram = nullptr;
 
   if (client_socket == -1){
@@ -180,9 +189,12 @@ int main() {
   while(n != 0){
     n = recvfrom(client_socket, buffer_for_file, MAX_BUFFER_SIZE, 0, (struct sockaddr*)&server_addr, &len);
     // std::cout << "n: " << n << std::endl;
+    buffer_for_file_str = buffer_for_file;
+    std::string payload = buffer_for_file_str.substr(buffer_for_file_str.find("SEGMENT_PAYLOAD") + 15, buffer_for_file_str.find("SEGMENT_DST_PORT") - (buffer_for_file_str.find("SEGMENT_PAYLOAD") + 15));
     std::ofstream file(file_name, std::ios::binary | std::ios::app);
     // std::cout << buffer_for_file << std::endl;
-    file.write(buffer_for_file, n);
+    std::cout << "payload: " << payload << std::endl;
+    file.write(payload.data(), payload.size());
     //memset(buffer_for_file, '\0', sizeof(buffer_for_file));
     file.close();
   }
