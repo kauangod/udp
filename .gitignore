@@ -1,2 +1,4 @@
 *.txt
 *.jpg
+/server/main
+/client/main

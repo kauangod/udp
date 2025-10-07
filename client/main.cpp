@@ -15,7 +15,7 @@
 #include <sstream>
 #define PORT 7777
 #define SERVER_IP_ADDRESS "127.0.0.1"
-#define MAX_BUFFER_SIZE 1024
+#define BYTES_PER_SEGMENT 1024
 
 class Segment{
 public:
@@ -92,14 +92,21 @@ int parse_command(std::string command, int* o1, int* o2, int* o3, int* o4){
   }
   return 0;
 }
+
+void losing_segments(void) {
+  /*TODO: Implement the function that will lose some segments and show the IDs
+   * of which ones are lost*/
+  return;
+}
+
 int main() {
   std::string command = "", ip_address = "", file_name = "", request = "";
   std::regex ip_pattern("^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$");
   struct sockaddr_in server_addr;
   socklen_t len = 0;
   in_addr_t ip_addr_num = 0;
-  int client_socket = socket(AF_INET, SOCK_DGRAM, 0), port = 0, n = 1, send_status = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0;
-  char buffer[1024] = {0};
+  int client_socket = socket(AF_INET, SOCK_DGRAM, 0), port = 0, n = 1, o1 = 0, o2 = 0, o3 = 0, o4 = 0;
+  char buffer[BYTES_PER_SEGMENT] = {0};
   std::string buffer_for_file_str = "";
   Datagram* datagram = nullptr;
 
@@ -156,14 +163,13 @@ int main() {
     file_name += command[p4 + i + 1];
   }
 
-  // If the target file already exists, remove it to start fresh
-  {
-    std::ifstream existing_file_check(file_name, std::ios::binary);
-    if (existing_file_check.good()){
-      existing_file_check.close();
-      std::remove(file_name.c_str());
-    }
+  std::ifstream existing_file_check(file_name, std::ios::binary);
+
+  if (existing_file_check.good()){
+    existing_file_check.close();
+    std::remove(file_name.c_str());
   }
+
 
   ip_addr_num = (in_addr_t) inet_addr(ip_address.c_str());
   server_addr.sin_family = AF_INET;
@@ -171,40 +177,35 @@ int main() {
   server_addr.sin_addr.s_addr = ip_addr_num;
   const char* command_c = command.c_str();
 
-  send_status = sendto(client_socket, (const char*)command_c, strlen(command_c), MSG_CONFIRM,
-          (struct sockaddr*)&server_addr, sizeof(server_addr));
+  clock_t start = clock();
 
-  if (send_status == -1){
-    std::cerr << "Error sending command to server, either the server is not running or it's busy." << std::endl;
-    close(client_socket);
-    return -1;
-  }
+  sendto(client_socket, (const char*)command_c, strlen(command_c), 0,
+        (struct sockaddr*)&server_addr, sizeof(server_addr));
 
-  char buffer_for_file[MAX_BUFFER_SIZE];
+  char buffer_for_file[BYTES_PER_SEGMENT];
   len = sizeof(server_addr);
 
   // std::cout << "Server address: " << inet_ntoa(server_addr.sin_addr) << std::endl;
   // std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
+  // Configure a receive timeout to avoid infinite blocking and avoid DONTWAIT corruption
 
-  while(n != 0){
-    n = recvfrom(client_socket, buffer_for_file, MAX_BUFFER_SIZE, 0, (struct sockaddr*)&server_addr, &len);
-    // std::cout << "n: " << n << std::endl;
-    buffer_for_file_str = buffer_for_file;
-    std::string payload = buffer_for_file_str.substr(buffer_for_file_str.find("SEGMENT_PAYLOAD") + 15, buffer_for_file_str.find("SEGMENT_DST_PORT") - (buffer_for_file_str.find("SEGMENT_PAYLOAD") + 15));
-    std::ofstream file(file_name, std::ios::binary | std::ios::app);
-    // std::cout << buffer_for_file << std::endl;
-    std::cout << "payload: " << payload << std::endl;
-    file.write(payload.data(), payload.size());
-    //memset(buffer_for_file, '\0', sizeof(buffer_for_file));
-    file.close();
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  std::ofstream file(file_name, std::ios::binary);
+
+  for(;;){
+    n = recvfrom(client_socket, buffer_for_file, BYTES_PER_SEGMENT, 0, (struct sockaddr*)&server_addr, &len);
+    if (n == 0) break;
+    file.write(buffer_for_file, n);
   }
+
+  file.close();
   close(client_socket);
 
   return 0;
 }
 
-void losing_segments(void) {
-  /*TODO: Implement the function that will lose some segments and show the IDs
-   * of which ones are lost*/
-  return;
-}
+
