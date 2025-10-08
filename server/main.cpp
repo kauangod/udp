@@ -12,6 +12,8 @@
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <fstream>
+#include <cerrno>
+#include <cstdio>
 #define PORT 7777
 #define BYTES_PER_SEGMENT 1024
 
@@ -113,18 +115,26 @@ int main() {
         return -1;
     }
 
-    while(true){
-        len = sizeof(client_addr);
-        n = 0;
+    len = sizeof(client_addr);
 
+    while(recvfrom(server_socket, buffer, 4, 0, (struct sockaddr*)&client_addr, &len) != 4 && memcmp(buffer, "SYNC", 4) != 0){
+    }
+
+    while(memcmp(buffer, "SYNC", 4) == 0){
+        n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
+        sendto(server_socket, "ACK", 3, 0, (struct sockaddr*)&client_addr, len);
+    }
+
+    while(true){
         while(n == 0){
             n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
         }
 
+        n = 0;
+
         //  std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
         //  std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
 
-        buffer[n] = '\0';
         // std::cout << buffer << std::endl;
 
         std::string buffer_str = buffer;
@@ -189,6 +199,7 @@ int main() {
             // //std::cout << "datagram_str: " << datagram_str << std::endl;
             char* buffer_for_file = new char[buffer_size];
             memcpy(buffer_for_file, datagram_str.data(), buffer_size);
+
             number_of_bytes = sendto(server_socket, buffer_for_file, buffer_size, 0, (struct sockaddr*) &client_addr, len);
 
             if (number_of_bytes == -1){
@@ -200,6 +211,7 @@ int main() {
             }
            delete[] buffer_for_file;
         }
+
         sendto(server_socket, nullptr, 0, 0, (struct sockaddr*) &client_addr, len);
         std::cout << "File sent successfully" << std::endl;
         delete datagram;

@@ -16,6 +16,7 @@
 #define PORT 7777
 #define SERVER_IP_ADDRESS "127.0.0.1"
 #define BYTES_PER_SEGMENT 1024
+#define TIMEOUT 10000000
 
 class Segment{
 public:
@@ -177,13 +178,24 @@ int main() {
   server_addr.sin_addr.s_addr = ip_addr_num;
   const char* command_c = command.c_str();
 
+  len = sizeof(server_addr);
   clock_t start = clock();
+
+  while(recvfrom(client_socket, buffer, 4, MSG_DONTWAIT, (struct sockaddr*)&server_addr, &len) != 3 && memcmp(buffer, "ACK", 3) != 0){
+    sendto(client_socket, "SYNC", 4, 0,
+           (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (clock() - start > TIMEOUT){
+      std::cerr << "Connection timeout." << std::endl;
+      close(client_socket);
+      return -1;
+    }
+  }
 
   sendto(client_socket, (const char*)command_c, strlen(command_c), 0,
         (struct sockaddr*)&server_addr, sizeof(server_addr));
 
   char buffer_for_file[BYTES_PER_SEGMENT];
-  len = sizeof(server_addr);
+
 
   // std::cout << "Server address: " << inet_ntoa(server_addr.sin_addr) << std::endl;
   // std::cout << "Server port: " << ntohs(server_addr.sin_port) << std::endl;
@@ -199,6 +211,7 @@ int main() {
   for(;;){
     n = recvfrom(client_socket, buffer_for_file, BYTES_PER_SEGMENT, 0, (struct sockaddr*)&server_addr, &len);
     if (n == 0) break;
+    if (memcmp(buffer_for_file, "ACK", 3) == 0) continue;
     file.write(buffer_for_file, n);
   }
 
