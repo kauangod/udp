@@ -18,6 +18,12 @@
 #define BYTES_PER_SEGMENT 1024
 #define TIMEOUT 10000000
 
+typedef enum {
+  TYPE_DATA = 0,
+  TYPE_ACK = 1,
+  TYPE_SYNC = 2
+} MessageType;
+
 class Segment{
 public:
     std::string dst_port, src_port, payload, hash;
@@ -181,8 +187,8 @@ int main() {
   len = sizeof(server_addr);
   clock_t start = clock();
 
-  while(recvfrom(client_socket, buffer, 4, MSG_DONTWAIT, (struct sockaddr*)&server_addr, &len) != 3 && memcmp(buffer, "ACK", 3) != 0){
-    sendto(client_socket, "SYNC", 4, 0,
+  while(recvfrom(client_socket, buffer, 1, MSG_DONTWAIT, (struct sockaddr*)&server_addr, &len) != 1 && memcmp(buffer, "1", 1) != 0){
+    sendto(client_socket, "2", 1, 0,
            (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (clock() - start > TIMEOUT){
       std::cerr << "Connection timeout." << std::endl;
@@ -207,12 +213,15 @@ int main() {
   setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
   std::ofstream file(file_name, std::ios::binary);
-
+  int type = 0;
   for(;;){
     n = recvfrom(client_socket, buffer_for_file, BYTES_PER_SEGMENT, 0, (struct sockaddr*)&server_addr, &len);
+    type = buffer_for_file[0] - '0';
+    std::cout << "type: " << type << std::endl;
     if (n == 0) break;
-    if (memcmp(buffer_for_file, "ACK", 3) == 0) continue;
-    file.write(buffer_for_file, n);
+    if (type != TYPE_DATA) continue;
+    std::cout << "buffer_for_file: " << buffer_for_file << std::endl;
+    file.write(&buffer_for_file[1], n - 1);
   }
 
   file.close();

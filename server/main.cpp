@@ -17,6 +17,12 @@
 #define PORT 7777
 #define BYTES_PER_SEGMENT 1024
 
+typedef enum {
+  TYPE_DATA = 0,
+  TYPE_ACK = 1,
+  TYPE_SYNC = 2
+} MessageType;
+
 class Segment{
 public:
     std::string dst_port, src_port, payload, hash;
@@ -99,6 +105,7 @@ int main() {
     in_addr_t ip_addr_num = inet_addr(ip_address);
     std::vector<Segment*> segments;
     Segment* segment = nullptr;
+    char* ack_message = new char[4];
 
     if (server_socket == -1){
         std::cerr << "Error creating socket" << std::endl;
@@ -115,110 +122,116 @@ int main() {
         return -1;
     }
 
-    len = sizeof(client_addr);
+while(true){
+        len = sizeof(client_addr);
 
-    while(recvfrom(server_socket, buffer, 4, 0, (struct sockaddr*)&client_addr, &len) != 4 && memcmp(buffer, "SYNC", 4) != 0){
-    }
+        while(recvfrom(server_socket, buffer, 1, 0, (struct sockaddr*)&client_addr, &len) != 4 && memcmp(buffer, "2", 1) != 0){
+        }
 
-    while(memcmp(buffer, "SYNC", 4) == 0){
-        n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
-        sendto(server_socket, "ACK", 3, 0, (struct sockaddr*)&client_addr, len);
-    }
-
-    while(true){
-        while(n == 0){
+        while(memcmp(buffer, "2", 1) == 0){
             n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
+            ack_message[0] = TYPE_ACK + '0';
+            std::cout << "ack_message: " << ack_message << std::endl;
+            sendto(server_socket, ack_message, 1, 0, (struct sockaddr*)&client_addr, len);
         }
 
-        n = 0;
+        while(true){
+            while(n == 0){
+                n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
+            }
 
-        //  std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
-        //  std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
+            n = 0;
 
-        // std::cout << buffer << std::endl;
+            //  std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
+            //  std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
 
-        std::string buffer_str = buffer;
-        std::string file_name = return_file_name(buffer_str);
-        std::ifstream file(file_name, std::ios::binary);
+            // std::cout << buffer << std::endl;
 
-        if (!file.is_open()){
-            message = "File not found";
-            sendto(server_socket, (const char*) message, strlen(message), 0, (struct sockaddr*) &client_addr, len);
-            close(server_socket);
-            return -1;
-        }
+            std::string buffer_str = buffer;
+            std::string file_name = return_file_name(buffer_str);
+            std::ifstream file(file_name, std::ios::binary);
 
-        char* seg_payload = new char[BYTES_PER_SEGMENT];
-        //std::ofstream file1("image2.jpg", std::ios::binary);
-        while(file){
-            file.read(seg_payload, static_cast<std::streamsize>(BYTES_PER_SEGMENT));
-            std::streamsize bytes_read = file.gcount();
-            // std::cout << "seg_payload: " << seg_payload << std::endl;
-            if (bytes_read <= 0) break;
-
-            // for (int i = 0; i < bytes_read; i++)
-                // std::cout << "seg_payload: " << static_cast<unsigned int>(static_cast<unsigned char>(seg_payload[i])) << std::endl;
-
-            //file1.write(seg_payload, bytes_read);
-
-            segment = new Segment(std::to_string(ntohs(client_addr.sin_port)),
-                                  std::to_string(PORT), std::string(seg_payload, bytes_read), id++);
-
-            // for (int i = 0; i < bytes_read; i++)
-                // std::cout << "seg_payload_string: " << static_cast<unsigned int>(static_cast<unsigned char>(segment->payload[i])) << std::endl;
-            segments.push_back(segment);
-            //std::cout << "segment payload: " << segment->payload.data() << std::endl;
-            //std::cout.write(seg_payload.data(), bytes_read);
-            //std::cout << std::endl;
-        }
-        //file1.close();
-
-
-        Datagram* datagram = new Datagram(ip_address, inet_ntoa(client_addr.sin_addr));
-        // std::cout << "Client socket: " << client_socket << std::endl;
-        // std::cout << "Client address: " << datagram->dst_ip << std::endl;
-        int i = 0;
-        size_t buffer_size, number_of_bytes = 0;
-
-        while(i < segments.size()){
-            datagram->add_segment(segments[i++]);
-            // std::string dst_port(datagram->segment->dst_port.c_str(), datagram->segment->dst_port.size());
-            // //std::cout << "dst_port: " << datagram->segment->dst_port << std::endl;
-            // //std::cout << "dst_port size: " << datagram->segment->dst_port.size() << std::endl;
-            // std::string src_port(datagram->segment->src_port.c_str(), datagram->segment->src_port.size());
-            // std::string dst_ip(datagram->dst_ip.c_str(), datagram->dst_ip.size());
-            // std::string src_ip(datagram->src_ip.c_str(), datagram->src_ip.size());
-            // std::string id(std::to_string(datagram->segment->id), std::to_string(datagram->segment->id).size());
-            // std::string length(std::to_string(datagram->segment->length), std::to_string(datagram->segment->length).size());
-
-            // std::string datagram_str = "SEGMENT_HASH" + hash + "SEGMENT_ID" + id + "SEGMENT_LENGTH" + length + "SEGMENT_PAYLOAD" + payload
-            //                      + "SEGMENT_DST_PORT" + dst_port + "SEGMENT_SRC_PORT" + src_port + "SEGMENT_DST_IP" + dst_ip + "SEGMENT_SRC_IP" + src_ip;
-            std::string datagram_str = datagram->segment->payload;
-            buffer_size = datagram_str.size();
-            //std::cout << "hash: " << datagram->segment->hash << std::endl;
-            // //std::cout << "datagram_str: " << datagram_str << std::endl;
-            char* buffer_for_file = new char[buffer_size];
-            memcpy(buffer_for_file, datagram_str.data(), buffer_size);
-
-            number_of_bytes = sendto(server_socket, buffer_for_file, buffer_size, 0, (struct sockaddr*) &client_addr, len);
-
-            if (number_of_bytes == -1){
-                std::cerr << "Error sending file to client" << std::endl;
+            if (!file.is_open()){
+                message = "File not found";
+                sendto(server_socket, (const char*) message, strlen(message), 0, (struct sockaddr*) &client_addr, len);
                 close(server_socket);
                 return -1;
-            } else {
-                //std::cout << "Bytes sent: " << number_of_bytes << std::endl;
             }
-           delete[] buffer_for_file;
+
+            char* seg_payload = new char[BYTES_PER_SEGMENT];
+            //std::ofstream file1("image2.jpg", std::ios::binary);
+            while(file){
+                seg_payload[0] = TYPE_DATA + '0';
+                file.read(&seg_payload[1], static_cast<std::streamsize>(BYTES_PER_SEGMENT - 1));
+                std::streamsize bytes_read = file.gcount();
+
+                // std::cout << "seg_payload: " << seg_payload << std::endl;
+                if (bytes_read <= 0) break;
+                std::cout << seg_payload << std::endl;
+                // for (int i = 0; i < bytes_read; i++)
+                    // std::cout << "seg_payload: " << static_cast<unsigned int>(static_cast<unsigned char>(seg_payload[i])) << std::endl;
+
+                //file1.write(seg_payload, bytes_read);
+
+                segment = new Segment(std::to_string(ntohs(client_addr.sin_port)),
+                                    std::to_string(PORT), std::string(seg_payload, bytes_read + 1), id++);
+
+                // for (int i = 0; i < bytes_read; i++)
+                    // std::cout << "seg_payload_string: " << static_cast<unsigned int>(static_cast<unsigned char>(segment->payload[i])) << std::endl;
+                segments.push_back(segment);
+                //std::cout << "segment payload: " << segment->payload.data() << std::endl;
+                //std::cout.write(seg_payload.data(), bytes_read);
+                //std::cout << std::endl;
+            }
+            //file1.close();
+
+
+            Datagram* datagram = new Datagram(ip_address, inet_ntoa(client_addr.sin_addr));
+            // std::cout << "Client socket: " << client_socket << std::endl;
+            // std::cout << "Client address: " << datagram->dst_ip << std::endl;
+            int i = 0;
+            size_t buffer_size, number_of_bytes = 0;
+
+            while(i < segments.size()){
+                datagram->add_segment(segments[i++]);
+                // std::string dst_port(datagram->segment->dst_port.c_str(), datagram->segment->dst_port.size());
+                // //std::cout << "dst_port: " << datagram->segment->dst_port << std::endl;
+                // //std::cout << "dst_port size: " << datagram->segment->dst_port.size() << std::endl;
+                // std::string src_port(datagram->segment->src_port.c_str(), datagram->segment->src_port.size());
+                // std::string dst_ip(datagram->dst_ip.c_str(), datagram->dst_ip.size());
+                // std::string src_ip(datagram->src_ip.c_str(), datagram->src_ip.size());
+                // std::string id(std::to_string(datagram->segment->id), std::to_string(datagram->segment->id).size());
+                // std::string length(std::to_string(datagram->segment->length), std::to_string(datagram->segment->length).size());
+
+                // std::string datagram_str = "SEGMENT_HASH" + hash + "SEGMENT_ID" + id + "SEGMENT_LENGTH" + length + "SEGMENT_PAYLOAD" + payload
+                //                      + "SEGMENT_DST_PORT" + dst_port + "SEGMENT_SRC_PORT" + src_port + "SEGMENT_DST_IP" + dst_ip + "SEGMENT_SRC_IP" + src_ip;
+                std::string datagram_str = datagram->segment->payload;
+                buffer_size = datagram_str.size();
+                //std::cout << "hash: " << datagram->segment->hash << std::endl;
+                // //std::cout << "datagram_str: " << datagram_str << std::endl;
+                char* buffer_for_file = new char[buffer_size];
+                memcpy(buffer_for_file, datagram_str.data(), buffer_size);
+
+                number_of_bytes = sendto(server_socket, buffer_for_file, buffer_size, 0, (struct sockaddr*) &client_addr, len);
+
+                if (number_of_bytes == -1){
+                    std::cerr << "Error sending file to client" << std::endl;
+                    close(server_socket);
+                    return -1;
+                } else {
+                    //std::cout << "Bytes sent: " << number_of_bytes << std::endl;
+                }
+            delete[] buffer_for_file;
+            }
+
+            sendto(server_socket, nullptr, 0, 0, (struct sockaddr*) &client_addr, len);
+            std::cout << "File sent successfully" << std::endl;
+            delete datagram;
+            segments.clear();
+            file.close();
+            break;
         }
-
-        sendto(server_socket, nullptr, 0, 0, (struct sockaddr*) &client_addr, len);
-        std::cout << "File sent successfully" << std::endl;
-        delete datagram;
-        segments.clear();
-        file.close();
-    }
-
+}
     close(server_socket);
 
 
