@@ -27,7 +27,6 @@
 #define ACK_SIZE 3
 #define GET_SIZE 3
 int serverfd;
-bool finished = false;
 size_t client_id = 0;
 
 void *send_client_thread(void *arg);
@@ -39,6 +38,7 @@ typedef struct {
   int client_fd;
   char queue_name[32];
   struct mq_attr attr;
+  bool finished;
 } thread_args;
 
 class ServerDispatcher {
@@ -146,6 +146,7 @@ public:
         std::cout << "Socket do cliente " << this->client->id
                   << " instanciado com sucesso.\n";
       }
+      this->client->id++;
       client_list.push_back(this->client);
       this->bind_client_port(this->client);
       this->connect_client(this->client);
@@ -194,6 +195,7 @@ public:
     ((thread_args *)args)->client_addr = c->addr;
     ((thread_args *)args)->client_len = c->len;
     ((thread_args *)args)->client_fd = c->fd;
+    ((thread_args *)args)->finished = false;
     snprintf(this->args->queue_name, sizeof(this->args->queue_name),
              "/cliente_%d", c->id);
     mq_unlink(this->args->queue_name);
@@ -205,7 +207,7 @@ public:
 
     status =
         pthread_create(&send_thread, NULL, send_client_thread, (void *)args);
-
+    std::cout << "thread criada!\n";
     if (status != 0) {
       perror("Erro na criação da thread de envio do cliente!");
       exit(EXIT_FAILURE);
@@ -213,7 +215,7 @@ public:
 
     status =
         pthread_create(&recv_thread, NULL, recv_client_thread, (void *)args);
-
+    std::cout << "thread criada\n";
     if (status != 0) {
       perror("Erro na criação da thread de envio do cliente!");
       exit(EXIT_FAILURE);
@@ -270,16 +272,15 @@ std::string compute_sha256(const std::string &path,
 
 void *recv_client_thread(void *arg) {
   std::string request;
-  int recv_status;
+  int recv_status, send_status;
   struct sockaddr_in *client_addr = ((thread_args *)arg)->client_addr;
   socklen_t *client_len = ((thread_args *)arg)->client_len;
   int client_fd = ((thread_args *)arg)->client_fd;
   mqd_t mq = mq_open(((thread_args *)arg)->queue_name, O_CREAT | O_WRONLY, 0666,
                      &(((thread_args *)arg)->attr));
   for (;;) {
-    if (finished)
+    if (((thread_args *)arg)->finished)
       break;
-    int send_status;
     request.resize(BUFF_SIZ);
     *client_len = sizeof(*client_addr);
     recv_status = recvfrom(client_fd, request.data(), request.size(), 0,
@@ -320,11 +321,12 @@ void *send_client_thread(void *arg) {
                      &(((thread_args *)arg)->attr));
 
   for (;;) {
-    if (finished)
+    if (((thread_args *)arg)->finished)
       break;
     request.resize(BUFF_SIZ);
     msg_size = mq_receive(mq, request.data(), request.size(), NULL);
     if (msg_size >= 0) {
+      request.resize(msg_size);
     } else {
       perror("mq_receive");
       continue;
@@ -419,7 +421,7 @@ void *send_client_thread(void *arg) {
     sendto(client_fd, hash.data(), hash.size(), 0,
            (struct sockaddr *)client_addr, *client_len);
     request.clear();
-    finished = true;
+    ((thread_args *)arg)->finished = true;
   }
   ifs.close();
   close(client_fd);

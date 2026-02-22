@@ -181,6 +181,7 @@ int main() {
          (struct sockaddr *)&server_addr, len);
   bytes = recvfrom(clientfd, err_str.data(), MAX_BUFFER_SIZE, 0,
                    (struct sockaddr *)&server_addr, &len);
+  err_str.resize(bytes);
   if (err_str.substr(0, 4) == "Erro") {
     std::cout << err_str << "\n";
     std::cout << "Faça uma nova requisição ao servidor: ";
@@ -206,7 +207,7 @@ int main() {
     return 0;
   }
   buf.resize(static_cast<size_t>(bytes_recv));
-  std::cout << buf << "\n";
+  std::cout << "Tamanho total do arquivo: " << buf << "\n";
   file_size = std::stoi(buf);
   int current_chunk = 0, delimiter_pos, package_chunk;
 
@@ -221,7 +222,6 @@ int main() {
       perror("recvfrom");
       break;
     }
-    std::cout << bytes_recv << "\n";
     buf.resize(static_cast<size_t>(bytes_recv));
     std::ofstream ofs(file_name, std::ios::binary | std::ios::app);
     if (!ofs.is_open()) {
@@ -229,7 +229,6 @@ int main() {
     }
     delimiter_pos = buf.find(' ');
     chunk_hash = buf.substr(0, delimiter_pos);
-    std::cout << chunk_hash << "\n";
     size_t second_space = buf.find(' ', delimiter_pos + 1);
     package_chunk = std::stoi(
         buf.substr(delimiter_pos + 1, second_space - (delimiter_pos + 1)));
@@ -239,7 +238,6 @@ int main() {
     size_t header_size = 0;
 
     hash = compute_sha256("UNINITIALIZED", &payload);
-    std::cout << hash << "\n";
     if (current_chunk == package_chunk && chunk_hash == hash) {
       ofs.write(
           payload.data(),
@@ -258,7 +256,6 @@ int main() {
     if (package_ack.length() != 0) {
       package_ack.clear();
     }
-    std::cout << temp_size << "\n";
     if (temp_size >= file_size) {
       std::cout << "Aviso: Arquivo [" << file_name << "] recebido.\n";
       std::string local_hash = compute_sha256(file_name);
