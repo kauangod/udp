@@ -1,241 +1,433 @@
-#include <iostream>
-#include <string>
-#include <vector>
-#include <openssl/sha.h>
-#include <iomanip>
-#include <sstream>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <cstring>
-#include <sys/types.h>
 #include <arpa/inet.h>
+#include <asm-generic/socket.h>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <fstream>
-#include <cerrno>
-#include <cstdio>
+#include <iomanip>
+#include <ios>
+#include <iostream>
+#include <mqueue.h>
+#include <netinet/in.h>
+#include <netinet/udp.h>
+#include <openssl/evp.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
 #define PORT 7777
-#define BYTES_PER_SEGMENT 1024
+#define BUFF_SIZ 4096
+#define MAX_TRANSFER_UNIT 4096
+#define PAYLOAD_MAX_SIZE 2048
+#define ACK_SIZE 3
+#define GET_SIZE 3
+int serverfd;
+bool finished = false;
+size_t client_id = 0;
 
-typedef enum {
-  TYPE_DATA = 0,
-  TYPE_ACK = 1,
-  TYPE_SYNC = 2
-} MessageType;
+void *send_client_thread(void *arg);
+void *recv_client_thread(void *arg);
 
-class Segment{
+typedef struct {
+  struct sockaddr_in *client_addr;
+  socklen_t *client_len;
+  int client_fd;
+  char queue_name[32];
+  struct mq_attr attr;
+} thread_args;
+
+class ServerDispatcher {
 public:
-    std::string dst_port, src_port, payload, hash;
-    int id;
-    size_t length;
+  unsigned int reuse;
+  unsigned int fd;
+  socklen_t addr_len;
+  struct sockaddr_in addr;
+  ServerDispatcher() {
+    this->reuse = 1;
+    this->fd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&this->addr, 0, sizeof(this->addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    this->addr_len = sizeof(this->addr);
+    this->bind_main_port();
+    this->configure_opt();
+  }
+  ~ServerDispatcher() {}
+  void bind_main_port() {
+    int status;
+    status = bind(this->fd, (struct sockaddr *)&this->addr, this->addr_len);
+    if (status < 0) {
+      perror("Erro no bind: ");
+      close(this->fd);
+      exit(EXIT_FAILURE);
+    }
+  }
 
-    Segment(std::string dst_port = "7777", std::string src_port = "7777", std::string payload = std::string(), int id = 0){
-        this->dst_port = dst_port;
-        this->src_port = src_port;
-        this->payload = payload;
-        // std::cout << "dst_port: " << dst_port << std::endl;
-        // std::cout << "segment payload: " << this->payload.data() << std::endl;
-        this->id = id;
-        this->setHash();
-        // std::cout << "segment hash: " << this->hash << std::endl;
-        this->length = sizeof(payload) + sizeof(id) + sizeof(hash) + sizeof(dst_port) + sizeof(src_port);
+  void configure_opt() {
+    if (setsockopt(this->fd, SOL_SOCKET, SO_REUSEADDR, &this->reuse,
+                   sizeof(this->reuse)) < 0) {
+      perror("Erro ao setar opcional SOL_SOCKET: ");
+      close(this->fd);
+      exit(EXIT_FAILURE);
     }
-    ~Segment(){
-        payload.clear();
-    }
-    std::string generateHash(){
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256_CTX sha256;
-        SHA256_Init(&sha256);
-        SHA256_Update(&sha256, this->payload.c_str(), this->payload.size());
-        SHA256_Final(hash, &sha256);
-
-        std::stringstream ss;
-
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++){
-            ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-        }
-
-        return ss.str();
-    }
-    bool checkHash(std::string originalHash, std::string receivedHash){
-        return originalHash == receivedHash;
-    }
-    void setHash(){
-        this->hash = generateHash();
-    }
-};
-class Datagram{
-public:
-    Segment* segment;
-    std::string src_ip, dst_ip;
-
-    Datagram(std::string src_ip = "127.0.0.1", std::string dst_ip = "127.0.0.1"){
-        this->segment = nullptr;
-        this->src_ip = src_ip;
-        this->dst_ip = dst_ip;
-    }
-    ~Datagram(){
-        delete segment;
-    }
-    void add_segment(Segment* segment){
-        this->segment = segment;
-    }
+  }
 };
 
-void losing_segments(void){
-    /*TODO: Implement the function that will lose some segments and show the IDs of which ones are lost*/
-    return;
+class Client {
+public:
+  struct sockaddr_in *addr;
+  struct sockaddr_in *client_server_ref;
+  socklen_t *len;
+  socklen_t *len_ref;
+  int fd;
+  int id;
+  int reuse;
+  bool finished;
+  Client() {
+    this->fd = 0;
+    this->addr = new sockaddr_in();
+    this->len = new socklen_t(sizeof(*addr));
+    this->client_server_ref = new sockaddr_in();
+    this->len_ref = new socklen_t(sizeof(*client_server_ref));
+    this->reuse = 1;
+    this->set_socket();
+    this->finished = false;
+  }
+  ~Client() {}
+  void set_socket() {
+    this->fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (setsockopt(this->fd, SOL_SOCKET, SO_REUSEADDR, &this->reuse,
+                   sizeof(this->reuse)) < 0) {
+      perror("Erro ao setar opcional SO_REUSEADDR");
+      close(this->fd);
+    }
+  }
+};
+
+class ConManager {
+public:
+  ServerDispatcher *dispat;
+  Client *client;
+  thread_args *args;
+  std::vector<Client *> client_list;
+  std::string request;
+  std::string ack_msg;
+  ConManager() {
+    this->dispat = new ServerDispatcher();
+    this->args = new thread_args();
+    this->request.resize(BUFF_SIZ);
+    this->args->attr.mq_flags = 0;
+    this->args->attr.mq_maxmsg = 10;
+    this->args->attr.mq_msgsize = BUFF_SIZ;
+    this->args->attr.mq_curmsgs = 0;
+    this->wait_con(this->dispat);
+  }
+  ~ConManager() {
+    close(dispat->fd);
+    delete dispat;
+    for (Client *c : client_list) {
+      close(client->fd);
+      delete c;
+    }
+  }
+  void wait_con(ServerDispatcher *d) {
+    int status;
+    for (;;) {
+      this->client = new Client();
+      status = recvfrom(d->fd, this->request.data(), request.size(), 0,
+                        (sockaddr *)this->client->addr, this->client->len);
+      if (this->client->fd > 0) {
+        std::cout << "Socket do cliente " << this->client->id
+                  << " instanciado com sucesso.\n";
+      }
+      client_list.push_back(this->client);
+      this->bind_client_port(this->client);
+      this->connect_client(this->client);
+    }
+  }
+
+  void bind_client_port(Client *c) {
+    int status;
+    c->client_server_ref->sin_family = AF_INET;
+    c->client_server_ref->sin_port = htons(0);
+    c->client_server_ref->sin_addr.s_addr = INADDR_ANY;
+
+    status =
+        bind(c->fd, (struct sockaddr *)c->client_server_ref, *(c->len_ref));
+    if (status < 0) {
+      perror("Erro no bind do client_fd");
+      close(c->fd);
+      return;
+    }
+    if (getsockname(c->fd, (struct sockaddr *)c->client_server_ref,
+                    c->len_ref) < 0) {
+      perror("Erro ao obter porta do client_fd");
+      close(c->fd);
+    }
+  }
+  void connect_client(Client *c) {
+    if (connect(c->fd, (struct sockaddr *)c->addr, *(c->len)) < 0) {
+      perror("Erro ao conectar socket ao cliente");
+      close(c->fd);
+      exit(EXIT_FAILURE);
+    }
+    this->confirm_con(c);
+  }
+  void confirm_con(Client *c) {
+    this->ack_msg =
+        "ACK " + std::to_string(ntohs(c->client_server_ref->sin_port));
+    sendto(c->fd, this->ack_msg.data(), this->ack_msg.size(), 0,
+           (sockaddr *)c->addr, *(c->len));
+    std::cout << "Cliente " << client_id << " conectado na porta "
+              << ntohs(c->client_server_ref->sin_port) << "!\n";
+    c->id = client_id++;
+    define_args(this->args, c);
+    this->request.clear();
+  }
+  void define_args(thread_args *args, Client *c) {
+    ((thread_args *)args)->client_addr = c->addr;
+    ((thread_args *)args)->client_len = c->len;
+    ((thread_args *)args)->client_fd = c->fd;
+    snprintf(this->args->queue_name, sizeof(this->args->queue_name),
+             "/cliente_%d", c->id);
+    mq_unlink(this->args->queue_name);
+    this->thread_init();
+  }
+  void thread_init() {
+    unsigned int status;
+    pthread_t send_thread, recv_thread;
+
+    status =
+        pthread_create(&send_thread, NULL, send_client_thread, (void *)args);
+
+    if (status != 0) {
+      perror("Erro na criação da thread de envio do cliente!");
+      exit(EXIT_FAILURE);
+    }
+
+    status =
+        pthread_create(&recv_thread, NULL, recv_client_thread, (void *)args);
+
+    if (status != 0) {
+      perror("Erro na criação da thread de envio do cliente!");
+      exit(EXIT_FAILURE);
+    }
+  }
+};
+
+std::string compute_sha256(const std::string &path,
+                           const std::string *content = nullptr) {
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+
+  if (!ctx)
+    throw std::runtime_error("erro ao criar o contexto");
+
+  if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1)
+    throw std::runtime_error("erro no digestInit");
+
+  if (content) {
+    if (EVP_DigestUpdate(ctx, content->data(), content->size()) != 1)
+      throw std::runtime_error("erro no digestUpdate");
+  } else {
+    std::ifstream f(path, std::ios::binary);
+
+    if (!f)
+      throw std::runtime_error("erro ao abrir o arquivo");
+
+    char buf[4096];
+    while (f.good()) {
+      f.read(buf, sizeof(buf));
+      std::streamsize s = f.gcount();
+      if (s > 0) {
+        if (EVP_DigestUpdate(ctx, buf, s) != 1)
+          throw std::runtime_error("erro no digestUpdate");
+      }
+    }
+  }
+
+  unsigned char hash[EVP_MAX_MD_SIZE];
+  unsigned int hash_len = 0;
+
+  if (EVP_DigestFinal_ex(ctx, hash, &hash_len) != 1)
+    throw std::runtime_error("erro no digestFinal");
+
+  EVP_MD_CTX_free(ctx);
+
+  std::ostringstream oss;
+  oss << std::hex << std::setfill('0');
+
+  for (unsigned i = 0; i < hash_len; ++i)
+    oss << std::setw(2) << (int)hash[i];
+
+  return oss.str();
 }
 
-std::string return_file_name(std::string buffer){
-    size_t file_pos_0 = buffer.find('/') + 1;
-    size_t file_pos_end = buffer.length() - file_pos_0;
+void *recv_client_thread(void *arg) {
+  std::string request;
+  int recv_status;
+  struct sockaddr_in *client_addr = ((thread_args *)arg)->client_addr;
+  socklen_t *client_len = ((thread_args *)arg)->client_len;
+  int client_fd = ((thread_args *)arg)->client_fd;
+  mqd_t mq = mq_open(((thread_args *)arg)->queue_name, O_CREAT | O_WRONLY, 0666,
+                     &(((thread_args *)arg)->attr));
+  for (;;) {
+    if (finished)
+      break;
+    int send_status;
+    request.resize(BUFF_SIZ);
+    *client_len = sizeof(*client_addr);
+    recv_status = recvfrom(client_fd, request.data(), request.size(), 0,
+                           (sockaddr *)client_addr, client_len);
+    if (recv_status < 0) {
+      perror("recvfrom");
+      continue;
+    }
+    if (request.substr(0, 3) != "ACK") {
+      std::cout << request << "\n";
+    }
+    if (request.substr(0, GET_SIZE) == "GET" ||
+        request.substr(0, ACK_SIZE) == "ACK") {
+      send_status =
+          mq_send(mq, request.data(), static_cast<size_t>(recv_status), 0);
+      if (send_status == -1) {
+        perror("mq_send");
+      }
+      request.clear();
+    }
+  }
+  return nullptr;
+}
 
-    return buffer.substr(file_pos_0, file_pos_end - file_pos_0);
+void *send_client_thread(void *arg) {
+  sleep(1);
+  std::string request, file_name = "UNINITIALIZED", con_status;
+  ssize_t msg_size = 0;
+  int i = 0, bytes;
+  std::streamsize size = 0;
+  std::string content;
+  std::ifstream ifs;
+  struct sockaddr_in *client_addr = ((thread_args *)arg)->client_addr;
+  socklen_t *client_len = ((thread_args *)arg)->client_len;
+  int client_fd = ((thread_args *)arg)->client_fd;
+  bool first_interaction = true;
+  mqd_t mq = mq_open(((thread_args *)arg)->queue_name, O_RDONLY, 0666,
+                     &(((thread_args *)arg)->attr));
+
+  for (;;) {
+    if (finished)
+      break;
+    request.resize(BUFF_SIZ);
+    msg_size = mq_receive(mq, request.data(), request.size(), NULL);
+    if (msg_size >= 0) {
+    } else {
+      perror("mq_receive");
+      continue;
+    }
+    if (!std::strcmp(request.data(), "ACK") && first_interaction) {
+      bytes = sendto(client_fd, request.data(), ACK_SIZE, 0,
+                     (sockaddr *)client_addr, *client_len);
+
+      if (bytes < 0) {
+        perror("Erro no sendto");
+      }
+      first_interaction = false;
+      continue;
+    }
+    if (!std::strcmp(file_name.data(), "UNINITIALIZED")) {
+      client_addr = ((thread_args *)arg)->client_addr;
+      client_len = ((thread_args *)arg)->client_len;
+      size_t pos = request.find('/') + 1; /* GET @127.0.0.1:7777/nome_arquivo */
+      size_t file_name_size = request.size() - pos;
+      file_name = request.substr(pos, file_name_size);
+      ifs.open(file_name, std::ios::binary | std::ios::ate);
+      if (!ifs) {
+        con_status =
+            "Erro: O arquivo [" + file_name + "] requisitado não existe!";
+        sendto(client_fd, con_status.data(), con_status.size(), 0,
+               (sockaddr *)client_addr, *client_len);
+        file_name = "UNINITIALIZED";
+        continue;
+      } else {
+        con_status = "Aviso: Iniciando o envio do arquivo [" + file_name +
+                     "] requisitado.";
+        std::cout << con_status << "\n";
+        sendto(client_fd, con_status.data(), con_status.size(), 0,
+               (sockaddr *)client_addr, *client_len);
+      }
+      size = ifs.tellg();
+      ifs.seekg(0, std::ios::beg);
+      content.resize(PAYLOAD_MAX_SIZE);
+      std::string size_str = std::to_string(size);
+      std::cout << "Tamanho total do arquivo: " + size_str << "\n";
+      sendto(client_fd, size_str.data(), size_str.size(), 0,
+             (struct sockaddr *)client_addr, *client_len);
+    }
+    /* Fazer IF do ACK aqui para o envio dos segmentos */
+    size_t temp_size = 0;
+    int current_chunk = 0;
+    std::string ack_buf;
+    std::string hash = "";
+
+    unsigned int chunk_size = 0;
+
+    for (;;) {
+      ack_buf.resize(BUFF_SIZ);
+      if (temp_size >= size) {
+        break;
+      }
+      ifs.read(content.data(), PAYLOAD_MAX_SIZE);
+      chunk_size = ifs.gcount();
+      content.resize(chunk_size);
+      hash = compute_sha256(file_name, &content);
+      if (chunk_size <= 0) {
+        break;
+      }
+      content = hash + ' ' + std::to_string(current_chunk) + ' ' + content;
+      sendto(client_fd, content.data(), content.size(), 0,
+             (struct sockaddr *)client_addr, *client_len);
+
+      for (;;) {
+        msg_size = mq_receive(mq, ack_buf.data(), ack_buf.size(), NULL);
+        if (msg_size >= 0) {
+        } else {
+          perror("mq_receive");
+          continue;
+        }
+        if (ack_buf.substr(0, 3) == "ACK") {
+          int delimiter_pos = ack_buf.find(' ');
+          int client_chunk = std::stoi(ack_buf.substr(3, delimiter_pos));
+          if (client_chunk == current_chunk) {
+            sendto(client_fd, content.data(), content.size(), 0,
+                   (struct sockaddr *)client_addr, *client_len);
+          } else {
+            current_chunk++;
+            break;
+          }
+        }
+      }
+      temp_size += static_cast<size_t>(chunk_size);
+    }
+    std::cout << "Aviso: Envio do arquivo [" << file_name
+              << "] foi completo.\n";
+    hash = compute_sha256(file_name);
+    sendto(client_fd, hash.data(), hash.size(), 0,
+           (struct sockaddr *)client_addr, *client_len);
+    request.clear();
+    finished = true;
+  }
+  ifs.close();
+  close(client_fd);
+  return nullptr;
 }
 
 int main() {
-    int server_socket = socket(AF_INET, SOCK_DGRAM, 0), client_socket = -1, n = 0, id = 0;
-    const char* ip_address = "127.0.0.1";
-    const char* message = "Hello, client!";
-    char buffer[BYTES_PER_SEGMENT] = {0};
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t len = 0;
-    in_addr_t ip_addr_num = inet_addr(ip_address);
-    std::vector<Segment*> segments;
-    Segment* segment = nullptr;
-    char* ack_message = new char[4];
-
-    if (server_socket == -1){
-        std::cerr << "Error creating socket" << std::endl;
-        return -1;
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = ip_addr_num;
-
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0){
-        std::cerr << "Error binding socket" << std::endl;
-        close(server_socket);
-        return -1;
-    }
-
-while(true){
-        len = sizeof(client_addr);
-
-        while(recvfrom(server_socket, buffer, 1, 0, (struct sockaddr*)&client_addr, &len) != 4 && memcmp(buffer, "2", 1) != 0){
-        }
-
-        while(memcmp(buffer, "2", 1) == 0){
-            n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
-            ack_message[0] = TYPE_ACK + '0';
-            std::cout << "ack_message: " << ack_message << std::endl;
-            sendto(server_socket, ack_message, 1, 0, (struct sockaddr*)&client_addr, len);
-        }
-
-        while(true){
-            while(n == 0){
-                n = recvfrom(server_socket, (char*) buffer, sizeof(buffer), 0, (struct sockaddr*) &client_addr, &len);
-            }
-
-            n = 0;
-
-            //  std::cout << "Client address: " << inet_ntoa(client_addr.sin_addr) << std::endl;
-            //  std::cout << "Client port: " << ntohs(client_addr.sin_port) << std::endl;
-
-            // std::cout << buffer << std::endl;
-
-            std::string buffer_str = buffer;
-            std::string file_name = return_file_name(buffer_str);
-            std::ifstream file(file_name, std::ios::binary);
-
-            if (!file.is_open()){
-                message = "File not found";
-                sendto(server_socket, (const char*) message, strlen(message), 0, (struct sockaddr*) &client_addr, len);
-                close(server_socket);
-                return -1;
-            }
-
-            char* seg_payload = new char[BYTES_PER_SEGMENT];
-            //std::ofstream file1("image2.jpg", std::ios::binary);
-            while(file){
-                seg_payload[0] = TYPE_DATA + '0';
-                file.read(&seg_payload[1], static_cast<std::streamsize>(BYTES_PER_SEGMENT - 1));
-                std::streamsize bytes_read = file.gcount();
-
-                // std::cout << "seg_payload: " << seg_payload << std::endl;
-                if (bytes_read <= 0) break;
-                std::cout << seg_payload << std::endl;
-                // for (int i = 0; i < bytes_read; i++)
-                    // std::cout << "seg_payload: " << static_cast<unsigned int>(static_cast<unsigned char>(seg_payload[i])) << std::endl;
-
-                //file1.write(seg_payload, bytes_read);
-
-                segment = new Segment(std::to_string(ntohs(client_addr.sin_port)),
-                                    std::to_string(PORT), std::string(seg_payload, bytes_read + 1), id++);
-
-                // for (int i = 0; i < bytes_read; i++)
-                    // std::cout << "seg_payload_string: " << static_cast<unsigned int>(static_cast<unsigned char>(segment->payload[i])) << std::endl;
-                segments.push_back(segment);
-                //std::cout << "segment payload: " << segment->payload.data() << std::endl;
-                //std::cout.write(seg_payload.data(), bytes_read);
-                //std::cout << std::endl;
-            }
-            //file1.close();
-
-
-            Datagram* datagram = new Datagram(ip_address, inet_ntoa(client_addr.sin_addr));
-            // std::cout << "Client socket: " << client_socket << std::endl;
-            // std::cout << "Client address: " << datagram->dst_ip << std::endl;
-            int i = 0;
-            size_t buffer_size, number_of_bytes = 0;
-
-            while(i < segments.size()){
-                datagram->add_segment(segments[i++]);
-                // std::string dst_port(datagram->segment->dst_port.c_str(), datagram->segment->dst_port.size());
-                // //std::cout << "dst_port: " << datagram->segment->dst_port << std::endl;
-                // //std::cout << "dst_port size: " << datagram->segment->dst_port.size() << std::endl;
-                // std::string src_port(datagram->segment->src_port.c_str(), datagram->segment->src_port.size());
-                // std::string dst_ip(datagram->dst_ip.c_str(), datagram->dst_ip.size());
-                // std::string src_ip(datagram->src_ip.c_str(), datagram->src_ip.size());
-                // std::string id(std::to_string(datagram->segment->id), std::to_string(datagram->segment->id).size());
-                // std::string length(std::to_string(datagram->segment->length), std::to_string(datagram->segment->length).size());
-
-                // std::string datagram_str = "SEGMENT_HASH" + hash + "SEGMENT_ID" + id + "SEGMENT_LENGTH" + length + "SEGMENT_PAYLOAD" + payload
-                //                      + "SEGMENT_DST_PORT" + dst_port + "SEGMENT_SRC_PORT" + src_port + "SEGMENT_DST_IP" + dst_ip + "SEGMENT_SRC_IP" + src_ip;
-                std::string datagram_str = datagram->segment->payload;
-                buffer_size = datagram_str.size();
-                //std::cout << "hash: " << datagram->segment->hash << std::endl;
-                // //std::cout << "datagram_str: " << datagram_str << std::endl;
-                char* buffer_for_file = new char[buffer_size];
-                memcpy(buffer_for_file, datagram_str.data(), buffer_size);
-
-                number_of_bytes = sendto(server_socket, buffer_for_file, buffer_size, 0, (struct sockaddr*) &client_addr, len);
-
-                if (number_of_bytes == -1){
-                    std::cerr << "Error sending file to client" << std::endl;
-                    close(server_socket);
-                    return -1;
-                } else {
-                    //std::cout << "Bytes sent: " << number_of_bytes << std::endl;
-                }
-            delete[] buffer_for_file;
-            }
-
-            sendto(server_socket, nullptr, 0, 0, (struct sockaddr*) &client_addr, len);
-            std::cout << "File sent successfully" << std::endl;
-            delete datagram;
-            segments.clear();
-            file.close();
-            break;
-        }
+  pthread_t send_thread, recv_thread;
+  ConManager *mng = new ConManager();
+  return 0;
 }
-    close(server_socket);
-
-
-    return 0;
-}
-
-
