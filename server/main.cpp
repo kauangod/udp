@@ -143,8 +143,6 @@ public:
       status = recvfrom(d->fd, this->request.data(), request.size(), 0,
                         (sockaddr *)this->client->addr, this->client->len);
       if (this->client->fd > 0) {
-        std::cout << "Socket do cliente " << this->client->id
-                  << " instanciado com sucesso.\n";
       }
       this->client->id++;
       client_list.push_back(this->client);
@@ -185,8 +183,8 @@ public:
         "ACK " + std::to_string(ntohs(c->client_server_ref->sin_port));
     sendto(c->fd, this->ack_msg.data(), this->ack_msg.size(), 0,
            (sockaddr *)c->addr, *(c->len));
-    std::cout << "Cliente " << client_id << " conectado na porta "
-              << ntohs(c->client_server_ref->sin_port) << "!\n";
+    std::cout << "[+] Cliente " << client_id << " conectado (porta "
+              << ntohs(c->client_server_ref->sin_port) << ").\n";
     c->id = client_id++;
     define_args(this->args, c);
     this->request.clear();
@@ -207,7 +205,7 @@ public:
 
     status =
         pthread_create(&send_thread, NULL, send_client_thread, (void *)args);
-    std::cout << "thread criada!\n";
+
     if (status != 0) {
       perror("Erro na criação da thread de envio do cliente!");
       exit(EXIT_FAILURE);
@@ -215,7 +213,7 @@ public:
 
     status =
         pthread_create(&recv_thread, NULL, recv_client_thread, (void *)args);
-    std::cout << "thread criada\n";
+
     if (status != 0) {
       perror("Erro na criação da thread de envio do cliente!");
       exit(EXIT_FAILURE);
@@ -289,8 +287,8 @@ void *recv_client_thread(void *arg) {
       perror("recvfrom");
       continue;
     }
-    if (request.substr(0, 3) != "ACK") {
-      std::cout << request << "\n";
+    if (request.substr(0, GET_SIZE) == "GET") {
+      std::cout << "[>>] " << request << "\n";
     }
     if (request.substr(0, GET_SIZE) == "GET" ||
         request.substr(0, ACK_SIZE) == "ACK") {
@@ -356,9 +354,8 @@ void *send_client_thread(void *arg) {
         file_name = "UNINITIALIZED";
         continue;
       } else {
-        con_status = "Aviso: Iniciando o envio do arquivo [" + file_name +
-                     "] requisitado.";
-        std::cout << con_status << "\n";
+        con_status = "Aviso: Iniciando o envio do arquivo [" + file_name + "] requisitado.";
+        std::cout << "[+] Enviando '" << file_name << "' para o cliente.\n";
         sendto(client_fd, con_status.data(), con_status.size(), 0,
                (sockaddr *)client_addr, *client_len);
       }
@@ -366,7 +363,6 @@ void *send_client_thread(void *arg) {
       ifs.seekg(0, std::ios::beg);
       content.resize(PAYLOAD_MAX_SIZE);
       std::string size_str = std::to_string(size);
-      std::cout << "Tamanho total do arquivo: " + size_str << "\n";
       sendto(client_fd, size_str.data(), size_str.size(), 0,
              (struct sockaddr *)client_addr, *client_len);
     }
@@ -415,8 +411,7 @@ void *send_client_thread(void *arg) {
       }
       temp_size += static_cast<size_t>(chunk_size);
     }
-    std::cout << "Aviso: Envio do arquivo [" << file_name
-              << "] foi completo.\n";
+    std::cout << "[OK] Envio de '" << file_name << "' concluido.\n";
     hash = compute_sha256(file_name);
     sendto(client_fd, hash.data(), hash.size(), 0,
            (struct sockaddr *)client_addr, *client_len);
